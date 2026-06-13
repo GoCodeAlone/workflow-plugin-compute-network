@@ -1,0 +1,36 @@
+{
+  "name": "workflow-plugin-compute-network",
+  "version": "0.0.0",
+  "description": "Public network provider contracts and conformance helpers for Workflow Compute.",
+  "author": "GoCodeAlone",
+  "license": "MIT",
+  "type": "external",
+  "tier": "community",
+  "private": false,
+  "minEngineVersion": "0.64.7",
+  "keywords": [
+    "compute",
+    "network",
+    "provider-contracts",
+    "p2p",
+    "tor",
+    "tailnet"
+  ],
+  "homepage": "https://github.com/GoCodeAlone/workflow-plugin-compute-network",
+  "repository": "https://github.com/GoCodeAlone/workflow-plugin-compute-network",
+  "networkProvidersRef": "network-providers.json",
+  "dependencies": [
+    {
+      "name": "workflow-plugin-compute-core",
+      "constraint": ">=0.7.0"
+    }
+  ],
+  "capabilities": {
+    "configProvider": false,
+    "moduleTypes": [],
+    "stepTypes": [],
+    "triggerTypes": []
+  },
+  "contracts": []
+}
+
