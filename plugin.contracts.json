@@ -1,0 +1,67 @@
+{
+  "version": "1",
+  "contracts": [
+    {
+      "name": "NetworkProviderDescriptor",
+      "wire": "json",
+      "goType": "github.com/GoCodeAlone/workflow-plugin-compute-network/network.ProviderDescriptor",
+      "produces": [
+        "network-providers.json"
+      ],
+      "guarantees": [
+        "no-host-authority",
+        "bounded-network-modes",
+        "descriptor-digest-binding"
+      ]
+    },
+    {
+      "name": "NetworkProviderSidecar",
+      "wire": "json",
+      "goType": "github.com/GoCodeAlone/workflow-plugin-compute-network/network.SidecarPrepareRequest",
+      "produces": [
+        "SidecarPrepareResponse",
+        "SidecarCloseResponse"
+      ],
+      "guarantees": [
+        "no-policy-expansion",
+        "bounded-peer-set",
+        "bounded-destination-set",
+        "lifecycle-evidence"
+      ]
+    },
+    {
+      "name": "NetworkProviderConformance",
+      "wire": "json",
+      "goType": "github.com/GoCodeAlone/workflow-plugin-compute-network/network.ConformanceSpec",
+      "produces": [
+        "ProviderEvidence"
+      ],
+      "guarantees": [
+        "unsupported-does-not-advertise-support",
+        "urgent-teardown-evidence",
+        "unsafe-audit-field-rejection"
+      ]
+    }
+  ],
+  "protocolTypes": [
+    {
+      "name": "NetworkPolicy",
+      "wire": "json",
+      "goType": "github.com/GoCodeAlone/workflow-plugin-compute-core/protocol.NetworkPolicy",
+      "protocolVersion": "compute.v1alpha1",
+      "consumedBy": [
+        "SidecarPrepareRequest"
+      ]
+    },
+    {
+      "name": "P2PSessionPolicy",
+      "wire": "json",
+      "goType": "github.com/GoCodeAlone/workflow-plugin-compute-core/protocol.P2PSessionPolicy",
+      "protocolVersion": "compute.v1alpha1",
+      "consumedBy": [
+        "SidecarPrepareRequest"
+      ]
+    }
+  ]
+}
+

@@ -1,0 +1,66 @@
+{
+  "version": "network-provider-contracts.v1",
+  "providers": [
+    {
+      "protocol_version": "compute.v1alpha1",
+      "plugin_id": "workflow-plugin-compute-network",
+      "provider_id": "captive-gateway",
+      "contract_id": "compute-network.captive.v1",
+      "version": "v0.1.0",
+      "display_name": "Captive gateway provider contract",
+      "modes": ["direct", "relay", "offline"],
+      "sidecar_protocol": "compute-network-sidecar.v1",
+      "evidence_schema_ref": "schema://providers/workflow-plugin-compute-network/captive/evidence/v1",
+      "requires_daemon": true,
+      "supports_ingress": false,
+      "supports_content": false,
+      "managed_package_required": true
+    },
+    {
+      "protocol_version": "compute.v1alpha1",
+      "plugin_id": "workflow-plugin-compute-network",
+      "provider_id": "p2p-sidecar",
+      "contract_id": "compute-network.p2p.v1",
+      "version": "v0.1.0",
+      "display_name": "Bounded P2P sidecar provider contract",
+      "modes": ["p2p"],
+      "sidecar_protocol": "compute-network-sidecar.v1",
+      "evidence_schema_ref": "schema://providers/workflow-plugin-compute-network/p2p/evidence/v1",
+      "requires_daemon": true,
+      "supports_ingress": false,
+      "supports_content": true,
+      "managed_package_required": true
+    },
+    {
+      "protocol_version": "compute.v1alpha1",
+      "plugin_id": "workflow-plugin-compute-network",
+      "provider_id": "tor-sidecar",
+      "contract_id": "compute-network.tor.v1",
+      "version": "v0.1.0",
+      "display_name": "Tor sidecar provider contract",
+      "modes": ["tor"],
+      "sidecar_protocol": "compute-network-sidecar.v1",
+      "evidence_schema_ref": "schema://providers/workflow-plugin-compute-network/tor/evidence/v1",
+      "requires_daemon": true,
+      "supports_ingress": true,
+      "supports_content": false,
+      "managed_package_required": true
+    },
+    {
+      "protocol_version": "compute.v1alpha1",
+      "plugin_id": "workflow-plugin-compute-network",
+      "provider_id": "tailnet-sidecar",
+      "contract_id": "compute-network.tailnet.v1",
+      "version": "v0.1.0",
+      "display_name": "Tailnet sidecar provider contract",
+      "modes": ["tailnet"],
+      "sidecar_protocol": "compute-network-sidecar.v1",
+      "evidence_schema_ref": "schema://providers/workflow-plugin-compute-network/tailnet/evidence/v1",
+      "requires_daemon": true,
+      "supports_ingress": true,
+      "supports_content": false,
+      "managed_package_required": true
+    }
+  ]
+}
+
