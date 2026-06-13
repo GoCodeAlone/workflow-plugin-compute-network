@@ -204,7 +204,10 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 
 	closeReq, closeResp := closePair(descriptor.ProviderID, opts.ProviderVersion, core.NetworkModeP2P, req.RequestID, resp.SessionID, now, true, network.ProviderStatusSupported, "")
 	server.cleanup()
-	residue := scanAndRemove(sessionDir)
+	residue, err := scanAndRemove(sessionDir)
+	if err != nil {
+		return ConformanceArtifact{}, err
+	}
 	closeResp.Evidence.UrgentTeardown = &network.TeardownEvidence{
 		Completed:      residue.Clean,
 		ObservedAt:     now,
@@ -285,7 +288,10 @@ func runCaptive(opts RunOptions, now time.Time) (ConformanceArtifact, error) {
 		}
 		specs = append(specs, spec)
 	}
-	residue := scanAndRemove(sessionDir)
+	residue, err := scanAndRemove(sessionDir)
+	if err != nil {
+		return ConformanceArtifact{}, err
+	}
 	return ConformanceArtifact{
 		Supported: true,
 		Specs:     specs,
@@ -545,7 +551,7 @@ func startContentServer(ctx context.Context, opts RunOptions, contentPath, conte
 	if err := json.Unmarshal(line, &server); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return nil, fmt.Errorf("content server announcement invalid: %w", err)
+		return nil, fmt.Errorf("content server announcement invalid: %w: line=%q stderr=%q", err, strings.TrimSpace(string(line)), strings.TrimSpace(stderr.String()))
 	}
 	server.cmd = cmd
 	return &server, nil
@@ -578,17 +584,28 @@ func fetchContent(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func scanAndRemove(path string) ResidueScan {
-	entries, _ := os.ReadDir(path)
+func scanAndRemove(path string) (ResidueScan, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil && !os.IsNotExist(err) {
+		return ResidueScan{}, fmt.Errorf("scan residue before cleanup: %w", err)
+	}
 	scan := ResidueScan{RemovedEntries: len(entries)}
-	_ = os.RemoveAll(path)
-	if remaining, err := os.ReadDir(path); err == nil {
+	if err := os.RemoveAll(path); err != nil {
+		return scan, fmt.Errorf("remove residue: %w", err)
+	}
+	remaining, err := os.ReadDir(path)
+	if err == nil {
 		for _, entry := range remaining {
 			scan.RemainingNames = append(scan.RemainingNames, entry.Name())
 		}
+		scan.Clean = len(scan.RemainingNames) == 0
+		return scan, nil
 	}
-	scan.Clean = len(scan.RemainingNames) == 0
-	return scan
+	if os.IsNotExist(err) {
+		scan.Clean = true
+		return scan, nil
+	}
+	return scan, fmt.Errorf("scan residue after cleanup: %w", err)
 }
 
 func writeArtifact(path string, artifact ConformanceArtifact) error {

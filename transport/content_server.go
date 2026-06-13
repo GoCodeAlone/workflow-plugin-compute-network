@@ -70,7 +70,7 @@ func ServeContentProcess(ctx context.Context, args []string, stdout io.Writer, s
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	announcement := contentAnnouncement{
-		BaseURL:         "http://" + listener.Addr().String(),
+		BaseURL:         contentBaseURL(bindHost, listener.Addr()),
 		PID:             os.Getpid(),
 		IdentitySHA256:  identity,
 		SignatureSHA256: digestBytes(signature),
@@ -111,4 +111,21 @@ func argsAfterSeparator(args []string) []string {
 		return nil
 	}
 	return args[1:]
+}
+
+func contentBaseURL(bindHost string, addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "http://" + addr.String()
+	}
+	if bindHost != "" {
+		host = bindHost
+	}
+	switch host {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::", "[::]":
+		host = "::1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }

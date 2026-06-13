@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -45,6 +46,9 @@ func runConformance(args []string) error {
 	flags.StringVar(&workDir, "work-dir", "", "temporary work directory")
 	flags.StringVar(&bindHost, "bind", "127.0.0.1", "bind host for local conformance servers")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if mode == "" {
