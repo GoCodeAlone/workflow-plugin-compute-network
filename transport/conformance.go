@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -43,6 +44,9 @@ type RunOptions struct {
 	ContentServerCommand []string
 	ContentServerEnv     []string
 	LookPath             func(string) (string, error)
+	DialContext          func(context.Context, string, string) (net.Conn, error)
+	RunCommand           func(context.Context, string, ...string) ([]byte, error)
+	TorSocksAddress      string
 	ProviderVersion      string
 	Now                  time.Time
 }
@@ -114,9 +118,9 @@ func RunConformance(ctx context.Context, opts RunOptions) (ConformanceArtifact, 
 	case ModeCaptive:
 		artifact, err = runCaptive(opts, now)
 	case ModeTor:
-		artifact, err = runUnavailableOverlay(opts, now, ModeTor, core.NetworkModeTor, "tor-sidecar", []string{"arti", "tor"})
+		artifact, err = runTorOverlay(ctx, opts, now)
 	case ModeTailnet:
-		artifact, err = runUnavailableOverlay(opts, now, ModeTailnet, core.NetworkModeTailnet, "tailnet-sidecar", []string{"tailscale"})
+		artifact, err = runTailnetOverlay(ctx, opts, now)
 	default:
 		err = fmt.Errorf("unsupported conformance mode %q", opts.Mode)
 	}
@@ -293,18 +297,60 @@ func runCaptive(opts RunOptions, now time.Time) (ConformanceArtifact, error) {
 	}, nil
 }
 
-func runUnavailableOverlay(opts RunOptions, now time.Time, artifactMode Mode, networkMode core.NetworkMode, providerID string, toolNames []string) (ConformanceArtifact, error) {
+func runTorOverlay(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArtifact, error) {
+	if !toolAvailable(opts, "arti", "tor") {
+		return runOverlaySpec(opts, now, ModeTor, core.NetworkModeTor, "tor-sidecar", network.ProviderStatusUnsupported, "daemon unavailable", "")
+	}
+	address := opts.TorSocksAddress
+	if address == "" {
+		address = os.Getenv("WFCN_TOR_SOCKS_ADDR")
+	}
+	if address == "" {
+		address = "127.0.0.1:9050"
+	}
+	dial := opts.DialContext
+	if dial == nil {
+		dialer := net.Dialer{Timeout: 2 * time.Second}
+		dial = dialer.DialContext
+	}
+	conn, err := dial(ctx, "tcp", address)
+	if err != nil {
+		return runOverlaySpec(opts, now, ModeTor, core.NetworkModeTor, "tor-sidecar", network.ProviderStatusUnsupported, "daemon unavailable", "")
+	}
+	_ = conn.Close()
+	return runOverlaySpec(opts, now, ModeTor, core.NetworkModeTor, "tor-sidecar", network.ProviderStatusSupported, "", "system-tor-socks")
+}
+
+func runTailnetOverlay(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArtifact, error) {
+	if !toolAvailable(opts, "tailscale") {
+		return runOverlaySpec(opts, now, ModeTailnet, core.NetworkModeTailnet, "tailnet-sidecar", network.ProviderStatusUnsupported, "daemon unavailable", "")
+	}
+	run := opts.RunCommand
+	if run == nil {
+		run = runCommand
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := run(probeCtx, "tailscale", "status", "--json"); err != nil {
+		return runOverlaySpec(opts, now, ModeTailnet, core.NetworkModeTailnet, "tailnet-sidecar", network.ProviderStatusUnsupported, "daemon unavailable", "")
+	}
+	return runOverlaySpec(opts, now, ModeTailnet, core.NetworkModeTailnet, "tailnet-sidecar", network.ProviderStatusSupported, "", "tailscale-status")
+}
+
+func toolAvailable(opts RunOptions, toolNames ...string) bool {
 	lookup := opts.LookPath
 	if lookup == nil {
 		lookup = exec.LookPath
 	}
-	reason := "daemon unavailable"
 	for _, name := range toolNames {
 		if _, err := lookup(name); err == nil {
-			reason = "supported probe not configured"
-			break
+			return true
 		}
 	}
+	return false
+}
+
+func runOverlaySpec(opts RunOptions, now time.Time, artifactMode Mode, networkMode core.NetworkMode, providerID string, status network.ProviderStatus, unsupported string, discovery string) (ConformanceArtifact, error) {
 	descriptor := descriptor(providerID, "compute-network."+strings.TrimSuffix(providerID, "-sidecar")+".v1", opts.ProviderVersion, []core.NetworkMode{networkMode}, false, true)
 	req := prepareRequest(descriptor, networkMode, now)
 	resp := network.SidecarPrepareResponse{
@@ -314,10 +360,16 @@ func runUnavailableOverlay(opts RunOptions, now time.Time, artifactMode Mode, ne
 		ProviderID:      descriptor.ProviderID,
 		Mode:            networkMode,
 		WorkerID:        req.WorkerID,
-		Evidence:        evidence(descriptor.ProviderID, opts.ProviderVersion, networkMode, network.ProviderStatusUnsupported, now, reason),
+		Evidence:        evidence(descriptor.ProviderID, opts.ProviderVersion, networkMode, status, now, unsupported),
 	}
-	resp.Evidence.Lifecycle = append(resp.Evidence.Lifecycle, network.LifecycleEvent{Event: "unsupported", ObservedAt: now})
-	closeReq, closeResp := closePair(descriptor.ProviderID, opts.ProviderVersion, networkMode, req.RequestID, resp.SessionID, now, true, network.ProviderStatusUnsupported, reason)
+	if status == network.ProviderStatusSupported {
+		resp.Evidence.DiscoverySource = discovery
+		resp.Evidence.KeyExchange = "encrypted-overlay"
+		resp.Evidence.Lifecycle = append(resp.Evidence.Lifecycle, network.LifecycleEvent{Event: "prepared", ObservedAt: now})
+	} else {
+		resp.Evidence.Lifecycle = append(resp.Evidence.Lifecycle, network.LifecycleEvent{Event: "unsupported", ObservedAt: now})
+	}
+	closeReq, closeResp := closePair(descriptor.ProviderID, opts.ProviderVersion, networkMode, req.RequestID, resp.SessionID, now, true, status, unsupported)
 	spec := network.ConformanceSpec{
 		Descriptor:       descriptor,
 		PrepareRequest:   req,
@@ -325,13 +377,17 @@ func runUnavailableOverlay(opts RunOptions, now time.Time, artifactMode Mode, ne
 		CloseRequest:     closeReq,
 		CloseResponse:    closeResp,
 		ExpectedMode:     networkMode,
-		RequireSupported: false,
+		RequireSupported: status == network.ProviderStatusSupported,
 		ObservedAt:       now,
 	}
 	if err := network.VerifyProviderConformance(spec); err != nil {
 		return ConformanceArtifact{}, err
 	}
-	return ConformanceArtifact{Supported: false, Specs: []network.ConformanceSpec{spec}}, nil
+	return ConformanceArtifact{Supported: status == network.ProviderStatusSupported, Specs: []network.ConformanceSpec{spec}}, nil
+}
+
+func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func descriptor(providerID, contractID, version string, modes []core.NetworkMode, supportsContent, supportsIngress bool) network.ProviderDescriptor {

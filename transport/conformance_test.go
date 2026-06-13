@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,6 +128,49 @@ func TestUnavailableTorAndTailnetEmitUnsupportedEvidenceWithoutCapabilities(t *t
 	}
 }
 
+func TestAvailableTorAndTailnetEmitSupportedEvidence(t *testing.T) {
+	t.Parallel()
+	t.Run("tor", func(t *testing.T) {
+		t.Parallel()
+		artifact, err := transport.RunConformance(context.Background(), transport.RunOptions{
+			Mode:            transport.ModeTor,
+			ArtifactPath:    filepath.Join(t.TempDir(), "tor.json"),
+			WorkDir:         t.TempDir(),
+			TorSocksAddress: "127.0.0.1:19050",
+			LookPath: func(string) (string, error) {
+				return "/usr/bin/tor", nil
+			},
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				return &nopConn{}, nil
+			},
+			Now: fixedTime(),
+		})
+		if err != nil {
+			t.Fatalf("tor conformance failed: %v", err)
+		}
+		assertSupportedOverlay(t, artifact, network.ProviderStatusSupported)
+	})
+	t.Run("tailnet", func(t *testing.T) {
+		t.Parallel()
+		artifact, err := transport.RunConformance(context.Background(), transport.RunOptions{
+			Mode:         transport.ModeTailnet,
+			ArtifactPath: filepath.Join(t.TempDir(), "tailnet.json"),
+			WorkDir:      t.TempDir(),
+			LookPath: func(string) (string, error) {
+				return "/usr/bin/tailscale", nil
+			},
+			RunCommand: func(context.Context, string, ...string) ([]byte, error) {
+				return []byte(`{"Self":{"Online":true}}`), nil
+			},
+			Now: fixedTime(),
+		})
+		if err != nil {
+			t.Fatalf("tailnet conformance failed: %v", err)
+		}
+		assertSupportedOverlay(t, artifact, network.ProviderStatusSupported)
+	})
+}
+
 func TestContentServerHelper(t *testing.T) {
 	if os.Getenv("WFCN_HELPER_CONTENT_SERVER") != "1" {
 		return
@@ -145,6 +189,23 @@ func fixedTime() time.Time {
 	return time.Date(2026, 6, 13, 22, 0, 0, 0, time.UTC)
 }
 
+func assertSupportedOverlay(t *testing.T, artifact transport.ConformanceArtifact, status network.ProviderStatus) {
+	t.Helper()
+	if !artifact.Supported {
+		t.Fatalf("expected supported artifact: %+v", artifact)
+	}
+	spec := artifact.Specs[0]
+	if spec.PrepareResponse.Evidence.Status != status {
+		t.Fatalf("status = %q, want %q", spec.PrepareResponse.Evidence.Status, status)
+	}
+	if spec.PrepareResponse.Evidence.UnsupportedReason != "" {
+		t.Fatalf("supported overlay carried unsupported reason: %+v", spec.PrepareResponse.Evidence)
+	}
+	if err := network.VerifyProviderConformance(spec); err != nil {
+		t.Fatalf("supported overlay should satisfy conformance: %v", err)
+	}
+}
+
 func assertArtifactRoundTrips(t *testing.T, path string, want transport.ConformanceArtifact) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -159,3 +220,19 @@ func assertArtifactRoundTrips(t *testing.T, path string, want transport.Conforma
 		t.Fatalf("artifact round-trip mismatch: got=%+v want=%+v", got, want)
 	}
 }
+
+type nopConn struct{}
+
+func (*nopConn) Read([]byte) (int, error)         { return 0, errors.New("closed") }
+func (*nopConn) Write([]byte) (int, error)        { return 0, errors.New("closed") }
+func (*nopConn) Close() error                     { return nil }
+func (*nopConn) LocalAddr() net.Addr              { return nopAddr("local") }
+func (*nopConn) RemoteAddr() net.Addr             { return nopAddr("remote") }
+func (*nopConn) SetDeadline(time.Time) error      { return nil }
+func (*nopConn) SetReadDeadline(time.Time) error  { return nil }
+func (*nopConn) SetWriteDeadline(time.Time) error { return nil }
+
+type nopAddr string
+
+func (a nopAddr) Network() string { return string(a) }
+func (a nopAddr) String() string  { return string(a) }
