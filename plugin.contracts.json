@@ -41,6 +41,21 @@
         "urgent-teardown-evidence",
         "unsafe-audit-field-rejection"
       ]
+    },
+    {
+      "name": "NetworkProviderConformanceArtifact",
+      "wire": "json",
+      "goType": "github.com/GoCodeAlone/workflow-plugin-compute-network/transport.ConformanceArtifact",
+      "produces": [
+        "ProviderEvidence",
+        "network.ConformanceSpec"
+      ],
+      "guarantees": [
+        "p2p-real-content-transfer",
+        "captive-deny-by-default",
+        "unsupported-does-not-advertise-support",
+        "sanitized-json-artifact"
+      ]
     }
   ],
   "protocolTypes": [
@@ -64,4 +79,3 @@
     }
   ]
 }
-
