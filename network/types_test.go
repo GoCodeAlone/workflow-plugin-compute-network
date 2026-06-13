@@ -27,6 +27,14 @@ func TestProviderCatalogValidatesPublishedDescriptors(t *testing.T) {
 	}
 }
 
+func TestProviderDescriptorRejectsNonCanonicalTokenWhitespace(t *testing.T) {
+	descriptor := testDescriptor("p2p-sidecar", core.NetworkModeP2P)
+	descriptor.ProviderID = " p2p-sidecar"
+	if err := descriptor.Validate(); err == nil || !strings.Contains(err.Error(), "leading or trailing whitespace") {
+		t.Fatalf("expected token whitespace rejection, got %v", err)
+	}
+}
+
 func TestPrepareResponseRejectsPolicyExpansion(t *testing.T) {
 	now := time.Now().UTC()
 	req := testPrepareRequest(now)

@@ -522,9 +522,11 @@ var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`)
 var sha256Pattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func validateToken(name, value string) error {
-	value = strings.TrimSpace(value)
 	if value == "" {
 		return fmt.Errorf("%s is required", name)
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", name)
 	}
 	if !tokenPattern.MatchString(value) {
 		return fmt.Errorf("%s contains unsupported characters", name)
