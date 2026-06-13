@@ -129,7 +129,7 @@ func TestPluginContractsAdvertiseNetworkProviderContracts(t *testing.T) {
 	if err := json.Unmarshal(data, &contracts); err != nil {
 		t.Fatal(err)
 	}
-	var sidecarFound, conformanceFound, policyFound bool
+	var sidecarFound, conformanceFound, artifactFound, policyFound bool
 	for _, contract := range contracts.Contracts {
 		switch contract.Name {
 		case "NetworkProviderSidecar":
@@ -138,6 +138,10 @@ func TestPluginContractsAdvertiseNetworkProviderContracts(t *testing.T) {
 		case "NetworkProviderConformance":
 			conformanceFound = contract.GoType == "github.com/GoCodeAlone/workflow-plugin-compute-network/network.ConformanceSpec" &&
 				slices.Contains(contract.Guarantees, "unsupported-does-not-advertise-support")
+		case "NetworkProviderConformanceArtifact":
+			artifactFound = contract.GoType == "github.com/GoCodeAlone/workflow-plugin-compute-network/transport.ConformanceArtifact" &&
+				slices.Contains(contract.Guarantees, "p2p-real-content-transfer") &&
+				slices.Contains(contract.Guarantees, "captive-deny-by-default")
 		}
 	}
 	for _, typ := range contracts.ProtocolTypes {
@@ -147,7 +151,7 @@ func TestPluginContractsAdvertiseNetworkProviderContracts(t *testing.T) {
 			policyFound = true
 		}
 	}
-	if !sidecarFound || !conformanceFound || !policyFound {
-		t.Fatalf("network contracts incomplete: sidecar=%t conformance=%t policy=%t", sidecarFound, conformanceFound, policyFound)
+	if !sidecarFound || !conformanceFound || !artifactFound || !policyFound {
+		t.Fatalf("network contracts incomplete: sidecar=%t conformance=%t artifact=%t policy=%t", sidecarFound, conformanceFound, artifactFound, policyFound)
 	}
 }
