@@ -26,6 +26,7 @@ import (
 
 const ArtifactVersion = "compute-network-conformance.v1"
 const DefaultProviderVersion = "v0.2.0-dev"
+const DefaultContentFetchTimeout = 30 * time.Second
 
 var sha256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
@@ -52,6 +53,7 @@ type RunOptions struct {
 	RunCommand           func(context.Context, string, ...string) ([]byte, error)
 	TorSocksAddress      string
 	ProviderVersion      string
+	ContentFetchTimeout  time.Duration
 	Now                  time.Time
 }
 
@@ -169,7 +171,17 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 	}
 	defer source.cleanup()
 
-	got, err := fetchContent(ctx, strings.TrimRight(source.BaseURL, "/")+"/content")
+	fetchCtx := ctx
+	fetchCancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := opts.ContentFetchTimeout
+		if timeout <= 0 {
+			timeout = DefaultContentFetchTimeout
+		}
+		fetchCtx, fetchCancel = context.WithTimeout(ctx, timeout)
+	}
+	defer fetchCancel()
+	got, err := fetchContent(fetchCtx, strings.TrimRight(source.BaseURL, "/")+"/content")
 	if err != nil {
 		return ConformanceArtifact{}, err
 	}

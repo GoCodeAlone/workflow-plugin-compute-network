@@ -15,7 +15,7 @@ func TestRunConformanceRejectsExternalPeerFlagsOutsideP2P(t *testing.T) {
 	err := runConformance([]string{
 		"--mode", "captive",
 		"--artifact", t.TempDir() + "/captive.json",
-		"--external-peer-id", "peer-source-external",
+		"--external-peer-multi-node",
 	})
 	if err == nil || !strings.Contains(err.Error(), "external peer flags are only valid with --mode p2p") {
 		t.Fatalf("expected external peer mode error, got %v", err)

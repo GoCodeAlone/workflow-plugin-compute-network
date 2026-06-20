@@ -66,7 +66,7 @@ func runConformance(args []string) error {
 		return fmt.Errorf("--artifact is required")
 	}
 	var externalPeer *transport.ExternalContentPeer
-	if externalPeerID != "" || externalPeerBaseURL != "" || externalPeerContentRef != "" || externalPeerIdentitySHA256 != "" || externalPeerExpectedSHA256 != "" {
+	if externalPeerID != "" || externalPeerBaseURL != "" || externalPeerContentRef != "" || externalPeerIdentitySHA256 != "" || externalPeerExpectedSHA256 != "" || externalPeerMultiNode {
 		if mode != string(transport.ModeP2P) {
 			return fmt.Errorf("external peer flags are only valid with --mode p2p")
 		}

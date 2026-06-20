@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,30 @@ func TestP2PConformanceRejectsMalformedExternalExpectedDigest(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "expected_sha256 must be sha256:<64 lowercase hex chars>") {
 		t.Fatalf("expected malformed digest error, got %v", err)
+	}
+}
+
+func TestP2PConformanceExternalPeerFetchIsBounded(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:                transport.ModeP2P,
+		WorkDir:             t.TempDir(),
+		ContentFetchTimeout: 10 * time.Millisecond,
+		ExternalContentPeer: &transport.ExternalContentPeer{
+			PeerID:         "peer-source-external",
+			BaseURL:        server.URL,
+			ContentRef:     "content://inputs/external-p2p-smoke",
+			IdentitySHA256: "sha256:" + strings.Repeat("e", 64),
+		},
+		Now: fixedTime(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("expected bounded external fetch timeout, got %v", err)
 	}
 }
 
