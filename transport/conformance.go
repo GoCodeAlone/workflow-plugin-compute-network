@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -25,6 +26,9 @@ import (
 
 const ArtifactVersion = "compute-network-conformance.v1"
 const DefaultProviderVersion = "v0.2.0-dev"
+const DefaultContentFetchTimeout = 30 * time.Second
+
+var sha256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 type Mode string
 
@@ -43,12 +47,23 @@ type RunOptions struct {
 	Payload              []byte
 	ContentServerCommand []string
 	ContentServerEnv     []string
+	ExternalContentPeer  *ExternalContentPeer
 	LookPath             func(string) (string, error)
 	DialContext          func(context.Context, string, string) (net.Conn, error)
 	RunCommand           func(context.Context, string, ...string) ([]byte, error)
 	TorSocksAddress      string
 	ProviderVersion      string
+	ContentFetchTimeout  time.Duration
 	Now                  time.Time
+}
+
+type ExternalContentPeer struct {
+	PeerID            string
+	BaseURL           string
+	ContentRef        string
+	IdentitySHA256    string
+	ExpectedSHA256    string
+	ExternalMultiNode bool
 }
 
 type ConformanceArtifact struct {
@@ -68,6 +83,9 @@ type TransferProof struct {
 	ServerPID            int    `json:"server_pid"`
 	ServerIdentitySHA256 string `json:"server_identity_sha256"`
 	SignatureSHA256      string `json:"signature_sha256"`
+	SourcePeerID         string `json:"source_peer_id,omitempty"`
+	ExternalPeer         bool   `json:"external_peer,omitempty"`
+	ExternalMultiNode    bool   `json:"external_multi_node,omitempty"`
 }
 
 type CaptiveProof struct {
@@ -147,31 +165,39 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return ConformanceArtifact{}, err
 	}
-	contentPath := filepath.Join(sessionDir, "content.bin")
-	if err := os.WriteFile(contentPath, payload, 0o600); err != nil {
-		return ConformanceArtifact{}, err
-	}
-	contentRef := "content://inputs/p2p-smoke"
-	server, err := startContentServer(ctx, opts, contentPath, contentRef)
+	source, err := prepareP2PSource(ctx, opts, sessionDir, payload)
 	if err != nil {
 		return ConformanceArtifact{}, err
 	}
-	defer server.cleanup()
+	defer source.cleanup()
 
-	got, err := fetchContent(ctx, server.BaseURL+"/content")
+	fetchCtx := ctx
+	fetchCancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := opts.ContentFetchTimeout
+		if timeout <= 0 {
+			timeout = DefaultContentFetchTimeout
+		}
+		fetchCtx, fetchCancel = context.WithTimeout(ctx, timeout)
+	}
+	defer fetchCancel()
+	got, err := fetchContent(fetchCtx, strings.TrimRight(source.BaseURL, "/")+"/content")
 	if err != nil {
 		return ConformanceArtifact{}, err
 	}
-	if !bytes.Equal(got, payload) {
+	if !source.External && !bytes.Equal(got, payload) {
 		return ConformanceArtifact{}, errors.New("p2p content transfer returned unexpected payload")
 	}
 	transferDigest := digestBytes(got)
-	sinkDigest := digestBytes([]byte("peer-sink:" + contentRef))
+	if source.ExpectedSHA256 != "" && transferDigest != source.ExpectedSHA256 {
+		return ConformanceArtifact{}, fmt.Errorf("p2p external content digest %s does not match expected %s", transferDigest, source.ExpectedSHA256)
+	}
+	sinkDigest := digestBytes([]byte("peer-sink:" + source.ContentRef))
 
 	descriptor := descriptor("p2p-sidecar", "compute-network.p2p.v1", opts.ProviderVersion, []core.NetworkMode{core.NetworkModeP2P}, true, false)
 	req := prepareRequest(descriptor, core.NetworkModeP2P, now)
-	req.NetworkPolicy.AllowedDestinations = []core.NetworkDestination{{ContentRef: contentRef}}
-	req.P2PSessionPolicy = p2pPolicy(now, contentRef, server.IdentitySHA256, sinkDigest)
+	req.NetworkPolicy.AllowedDestinations = []core.NetworkDestination{{ContentRef: source.ContentRef}}
+	req.P2PSessionPolicy = p2pPolicy(now, source.ContentRef, source.PeerID, source.IdentitySHA256, sinkDigest)
 	req.AllowedProtocols = []string{"compute-content-v1"}
 	resp := network.SidecarPrepareResponse{
 		ProtocolVersion: network.SidecarProtocolVersion,
@@ -180,22 +206,23 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 		ProviderID:      descriptor.ProviderID,
 		Mode:            core.NetworkModeP2P,
 		WorkerID:        req.WorkerID,
-		PeerIDs:         []string{"peer-source", "peer-sink"},
+		PeerIDs:         []string{source.PeerID, "peer-sink"},
 		PeerIdentitiesSHA256: map[string]string{
-			"peer-source": server.IdentitySHA256,
+			source.PeerID: source.IdentitySHA256,
 			"peer-sink":   sinkDigest,
 		},
-		BoundDestinations: []core.NetworkDestination{{ContentRef: contentRef}},
+		BoundDestinations: []core.NetworkDestination{{ContentRef: source.ContentRef}},
 		ContentPeers: []network.ContentPeer{{
-			PeerID:         "peer-source",
-			BaseURL:        server.BaseURL,
-			ContentRefs:    []string{contentRef},
-			IdentitySHA256: server.IdentitySHA256,
+			PeerID:         source.PeerID,
+			BaseURL:        source.BaseURL,
+			ContentRefs:    []string{source.ContentRef},
+			IdentitySHA256: source.IdentitySHA256,
 		}},
 		Evidence: evidence(descriptor.ProviderID, opts.ProviderVersion, core.NetworkModeP2P, network.ProviderStatusSupported, now, ""),
 	}
 	resp.Evidence.KeyExchange = "ed25519-signed-identity"
-	resp.Evidence.DiscoverySource = "loopback-child-process"
+	resp.Evidence.DiscoverySource = source.DiscoverySource
+	resp.Evidence.NATPosture = source.NATPosture
 	resp.Evidence.PeerCount = 2
 	resp.Evidence.BytesTx = int64(len(got))
 	resp.Evidence.BytesRx = int64(len(got))
@@ -203,7 +230,7 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 	resp.Evidence.Lifecycle = append(resp.Evidence.Lifecycle, network.LifecycleEvent{Event: "prepared", ObservedAt: now})
 
 	closeReq, closeResp := closePair(descriptor.ProviderID, opts.ProviderVersion, core.NetworkModeP2P, req.RequestID, resp.SessionID, now, true, network.ProviderStatusSupported, "")
-	server.cleanup()
+	source.cleanup()
 	residue, err := scanAndRemove(sessionDir)
 	if err != nil {
 		return ConformanceArtifact{}, err
@@ -221,7 +248,7 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 		CloseRequest:          closeReq,
 		CloseResponse:         closeResp,
 		ExpectedMode:          core.NetworkModeP2P,
-		ExpectedContentRefs:   []string{contentRef},
+		ExpectedContentRefs:   []string{source.ContentRef},
 		RequireSupported:      true,
 		RequireLifecycleAudit: true,
 		RequireUrgentTeardown: true,
@@ -234,14 +261,108 @@ func runP2P(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArt
 		Supported: true,
 		Specs:     []network.ConformanceSpec{spec},
 		Transfer: &TransferProof{
-			ContentRef:           contentRef,
+			ContentRef:           source.ContentRef,
 			Bytes:                int64(len(got)),
 			SHA256:               transferDigest,
-			ServerPID:            server.PID,
-			ServerIdentitySHA256: server.IdentitySHA256,
-			SignatureSHA256:      server.SignatureSHA256,
+			ServerPID:            source.PID,
+			ServerIdentitySHA256: source.IdentitySHA256,
+			SignatureSHA256:      source.SignatureSHA256,
+			SourcePeerID:         source.PeerID,
+			ExternalPeer:         source.External,
+			ExternalMultiNode:    source.ExternalMultiNode,
 		},
 	}, nil
+}
+
+type p2pSource struct {
+	PeerID             string
+	BaseURL            string
+	ContentRef         string
+	IdentitySHA256     string
+	SignatureSHA256    string
+	ExpectedSHA256     string
+	PID                int
+	External           bool
+	ExternalMultiNode  bool
+	DiscoverySource    string
+	NATPosture         string
+	localContentServer *contentServer
+}
+
+func (s *p2pSource) cleanup() {
+	if s != nil && s.localContentServer != nil {
+		s.localContentServer.cleanup()
+	}
+}
+
+func prepareP2PSource(ctx context.Context, opts RunOptions, sessionDir string, payload []byte) (*p2pSource, error) {
+	if opts.ExternalContentPeer != nil {
+		peer := *opts.ExternalContentPeer
+		if err := validateExternalContentPeer(peer); err != nil {
+			return nil, err
+		}
+		return &p2pSource{
+			PeerID:            peer.PeerID,
+			BaseURL:           strings.TrimRight(peer.BaseURL, "/"),
+			ContentRef:        peer.ContentRef,
+			IdentitySHA256:    peer.IdentitySHA256,
+			ExpectedSHA256:    peer.ExpectedSHA256,
+			External:          true,
+			ExternalMultiNode: peer.ExternalMultiNode,
+			DiscoverySource:   "external-peer-endpoint",
+			NATPosture:        "external-peer",
+		}, nil
+	}
+
+	contentRef := "content://inputs/p2p-smoke"
+	contentPath := filepath.Join(sessionDir, "content.bin")
+	if err := os.WriteFile(contentPath, payload, 0o600); err != nil {
+		return nil, err
+	}
+	server, err := startContentServer(ctx, opts, contentPath, contentRef)
+	if err != nil {
+		return nil, err
+	}
+	return &p2pSource{
+		PeerID:             "peer-source",
+		BaseURL:            server.BaseURL,
+		ContentRef:         contentRef,
+		IdentitySHA256:     server.IdentitySHA256,
+		SignatureSHA256:    server.SignatureSHA256,
+		PID:                server.PID,
+		DiscoverySource:    "loopback-child-process",
+		NATPosture:         "local-loopback",
+		localContentServer: server,
+	}, nil
+}
+
+func validateExternalContentPeer(peer ExternalContentPeer) error {
+	var errs []error
+	if strings.TrimSpace(peer.PeerID) == "" {
+		errs = append(errs, errors.New("external p2p peer_id is required"))
+	}
+	if strings.TrimSpace(peer.BaseURL) == "" {
+		errs = append(errs, errors.New("external p2p base_url is required"))
+	}
+	if strings.TrimSpace(peer.ContentRef) == "" {
+		errs = append(errs, errors.New("external p2p content_ref is required"))
+	}
+	if strings.TrimSpace(peer.IdentitySHA256) == "" {
+		errs = append(errs, errors.New("external p2p identity_sha256 is required"))
+	}
+	contentPeer := network.ContentPeer{
+		PeerID:         peer.PeerID,
+		BaseURL:        strings.TrimRight(peer.BaseURL, "/"),
+		ContentRefs:    []string{peer.ContentRef},
+		IdentitySHA256: peer.IdentitySHA256,
+	}
+	if err := contentPeer.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("external p2p content peer: %w", err))
+	}
+	if peer.ExpectedSHA256 != "" && !sha256DigestPattern.MatchString(peer.ExpectedSHA256) {
+		errs = append(errs, errors.New("external p2p expected_sha256 must be sha256:<64 lowercase hex chars>"))
+	}
+	return errors.Join(errs...)
 }
 
 func runCaptive(opts RunOptions, now time.Time) (ConformanceArtifact, error) {
@@ -430,7 +551,7 @@ func prepareRequest(descriptor network.ProviderDescriptor, mode core.NetworkMode
 	}
 }
 
-func p2pPolicy(now time.Time, contentRef, sourceDigest, sinkDigest string) *core.P2PSessionPolicy {
+func p2pPolicy(now time.Time, contentRef, sourcePeerID, sourceDigest, sinkDigest string) *core.P2PSessionPolicy {
 	policy := &core.P2PSessionPolicy{
 		ProtocolVersion:   core.Version,
 		SessionID:         "session-p2p",
@@ -447,7 +568,7 @@ func p2pPolicy(now time.Time, contentRef, sourceDigest, sinkDigest string) *core
 		Nonce:             "nonce-conformance",
 		Mode:              core.P2PSessionModeContent,
 		Peers: []core.P2PSessionPeer{
-			{ID: "peer-source", Role: "source", IdentitySHA256: sourceDigest},
+			{ID: sourcePeerID, Role: "source", IdentitySHA256: sourceDigest},
 			{ID: "peer-sink", Role: "sink", IdentitySHA256: sinkDigest},
 		},
 		AllowedProtocols:     []string{"compute-content-v1"},

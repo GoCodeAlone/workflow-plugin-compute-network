@@ -141,6 +141,7 @@ func TestPluginContractsAdvertiseNetworkProviderContracts(t *testing.T) {
 		case "NetworkProviderConformanceArtifact":
 			artifactFound = contract.GoType == "github.com/GoCodeAlone/workflow-plugin-compute-network/transport.ConformanceArtifact" &&
 				slices.Contains(contract.Guarantees, "p2p-real-content-transfer") &&
+				slices.Contains(contract.Guarantees, "p2p-external-peer-transfer") &&
 				slices.Contains(contract.Guarantees, "captive-deny-by-default")
 		}
 	}

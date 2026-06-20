@@ -37,6 +37,28 @@ default and leave no residue. Tor and tailnet conformance emit explicit
 unsupported evidence when the required local daemon or tool is unavailable, and
 unsupported evidence never advertises peers, destinations, or content peers.
 
+For external multi-node validation, run a content peer separately and pass its
+bounded identity into P2P conformance:
+
+```sh
+workflow-plugin-compute-network conformance \
+  --mode p2p \
+  --artifact out/p2p-external.json \
+  --external-peer-id peer-source-external \
+  --external-peer-base-url https://peer.example.invalid \
+  --external-peer-content-ref content://inputs/external-p2p-smoke \
+  --external-peer-identity-sha256 sha256:<64-hex> \
+  --external-peer-expected-sha256 sha256:<64-hex> \
+  --external-peer-multi-node
+```
+
+External peer mode fetches the supplied peer endpoint, binds the supplied peer
+id and identity into the signed P2P session policy, and records
+`external_peer=true` in the transfer proof. `--external-peer-multi-node` should
+only be set by a caller that has separately verified the peer is running on a
+distinct node. The host still owns peer admission, signed session issuance,
+routing policy, topology verification, and artifact redaction.
+
 ## Verification
 
 ```sh

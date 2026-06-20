@@ -2,9 +2,14 @@ package transport_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +63,102 @@ func TestP2PConformanceUsesSeparateContentServerProcess(t *testing.T) {
 		t.Fatalf("p2p artifact does not satisfy conformance: %v", err)
 	}
 	assertArtifactRoundTrips(t, artifactPath, artifact)
+}
+
+func TestP2PConformanceCanUseExternalContentPeer(t *testing.T) {
+	t.Parallel()
+	payload := []byte("workflow compute external p2p peer content\n")
+	peerIdentity := "sha256:" + strings.Repeat("e", 64)
+	server := localExternalPeerServer(t, payload)
+	artifactPath := filepath.Join(t.TempDir(), "p2p-external.json")
+
+	artifact, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:         transport.ModeP2P,
+		ArtifactPath: artifactPath,
+		WorkDir:      t.TempDir(),
+		ExternalContentPeer: &transport.ExternalContentPeer{
+			PeerID:         "peer-source-external",
+			BaseURL:        server,
+			ContentRef:     "content://inputs/external-p2p-smoke",
+			IdentitySHA256: peerIdentity,
+			ExpectedSHA256: digestBytes(payload),
+		},
+		Now: fixedTime(),
+	})
+	if err != nil {
+		t.Fatalf("external p2p conformance failed: %v", err)
+	}
+	if !artifact.Supported || artifact.Transfer == nil || !artifact.Transfer.ExternalPeer {
+		t.Fatalf("external p2p conformance did not preserve external transfer proof: %+v", artifact.Transfer)
+	}
+	if artifact.Transfer.ExternalMultiNode {
+		t.Fatalf("external p2p conformance must not infer multi-node topology from URL alone: %+v", artifact.Transfer)
+	}
+	if artifact.Transfer.ServerPID != 0 {
+		t.Fatalf("external p2p conformance must not launch local content server, got pid %d", artifact.Transfer.ServerPID)
+	}
+	if artifact.Transfer.SourcePeerID != "peer-source-external" ||
+		artifact.Transfer.ServerIdentitySHA256 != peerIdentity ||
+		artifact.Transfer.SHA256 != digestBytes(payload) {
+		t.Fatalf("external transfer proof mismatch: %+v", artifact.Transfer)
+	}
+	spec := artifact.Specs[0]
+	if spec.PrepareResponse.Evidence.DiscoverySource != "external-peer-endpoint" ||
+		spec.PrepareResponse.Evidence.NATPosture != "external-peer" {
+		t.Fatalf("external p2p evidence did not record external discovery/posture: %+v", spec.PrepareResponse.Evidence)
+	}
+	if len(spec.PrepareResponse.ContentPeers) != 1 ||
+		spec.PrepareResponse.ContentPeers[0].PeerID != "peer-source-external" ||
+		spec.PrepareResponse.ContentPeers[0].BaseURL != server {
+		t.Fatalf("external content peer not bound into conformance response: %+v", spec.PrepareResponse.ContentPeers)
+	}
+	if err := network.VerifyProviderConformance(spec); err != nil {
+		t.Fatalf("external p2p artifact does not satisfy conformance: %v", err)
+	}
+	assertArtifactRoundTrips(t, artifactPath, artifact)
+}
+
+func TestP2PConformanceRejectsMalformedExternalExpectedDigest(t *testing.T) {
+	t.Parallel()
+	_, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:    transport.ModeP2P,
+		WorkDir: t.TempDir(),
+		ExternalContentPeer: &transport.ExternalContentPeer{
+			PeerID:         "peer-source-external",
+			BaseURL:        "https://peer.example.invalid",
+			ContentRef:     "content://inputs/external-p2p-smoke",
+			IdentitySHA256: "sha256:" + strings.Repeat("e", 64),
+			ExpectedSHA256: "sha256:not-a-digest",
+		},
+		Now: fixedTime(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected_sha256 must be sha256:<64 lowercase hex chars>") {
+		t.Fatalf("expected malformed digest error, got %v", err)
+	}
+}
+
+func TestP2PConformanceExternalPeerFetchIsBounded(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:                transport.ModeP2P,
+		WorkDir:             t.TempDir(),
+		ContentFetchTimeout: 10 * time.Millisecond,
+		ExternalContentPeer: &transport.ExternalContentPeer{
+			PeerID:         "peer-source-external",
+			BaseURL:        server.URL,
+			ContentRef:     "content://inputs/external-p2p-smoke",
+			IdentitySHA256: "sha256:" + strings.Repeat("e", 64),
+		},
+		Now: fixedTime(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("expected bounded external fetch timeout, got %v", err)
+	}
 }
 
 func TestCaptiveConformanceDeniesDirectRelayOfflineByDefault(t *testing.T) {
@@ -187,6 +288,38 @@ func helperContentServerCommand() []string {
 
 func fixedTime() time.Time {
 	return time.Date(2026, 6, 13, 22, 0, 0, 0, time.UTC)
+}
+
+func localExternalPeerServer(t *testing.T, payload []byte) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/content", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		_, _ = w.Write(payload)
+	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			panic(fmt.Sprintf("external peer server: %v", err))
+		}
+	}()
+	t.Cleanup(func() {
+		_ = server.Shutdown(context.Background())
+		_ = listener.Close()
+	})
+	return "http://" + listener.Addr().String()
+}
+
+func digestBytes(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func assertSupportedOverlay(t *testing.T, artifact transport.ConformanceArtifact, status network.ProviderStatus) {
