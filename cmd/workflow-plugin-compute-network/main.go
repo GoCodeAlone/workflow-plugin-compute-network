@@ -42,7 +42,9 @@ func runConformance(args []string) error {
 	flags.SetOutput(os.Stderr)
 	var mode, artifact, workDir, bindHost string
 	var externalPeerID, externalPeerBaseURL, externalPeerContentRef, externalPeerIdentitySHA256, externalPeerExpectedSHA256 string
+	var captiveTopologyRef string
 	var externalPeerMultiNode bool
+	var captiveExternalMultiNode bool
 	flags.StringVar(&mode, "mode", "", "conformance mode: p2p, captive, tor, or tailnet")
 	flags.StringVar(&artifact, "artifact", "", "artifact JSON output path")
 	flags.StringVar(&workDir, "work-dir", "", "temporary work directory")
@@ -53,6 +55,8 @@ func runConformance(args []string) error {
 	flags.StringVar(&externalPeerIdentitySHA256, "external-peer-identity-sha256", "", "external P2P source identity digest")
 	flags.StringVar(&externalPeerExpectedSHA256, "external-peer-expected-sha256", "", "optional expected sha256 digest for external P2P content")
 	flags.BoolVar(&externalPeerMultiNode, "external-peer-multi-node", false, "mark external P2P peer as separately verified distinct-node topology")
+	flags.StringVar(&captiveTopologyRef, "captive-topology-ref", "", "caller-supplied evidence ref for externally verified captive topology")
+	flags.BoolVar(&captiveExternalMultiNode, "captive-external-multi-node", false, "mark captive topology as separately verified distinct-node topology")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -79,12 +83,23 @@ func runConformance(args []string) error {
 			ExternalMultiNode: externalPeerMultiNode,
 		}
 	}
+	var captiveTopology *transport.CaptiveTopologyEvidence
+	if captiveTopologyRef != "" || captiveExternalMultiNode {
+		if mode != string(transport.ModeCaptive) {
+			return fmt.Errorf("captive topology flags are only valid with --mode captive")
+		}
+		captiveTopology = &transport.CaptiveTopologyEvidence{
+			TopologyRef:       captiveTopologyRef,
+			ExternalMultiNode: captiveExternalMultiNode,
+		}
+	}
 	result, err := transport.RunConformance(context.Background(), transport.RunOptions{
 		Mode:                transport.Mode(mode),
 		ArtifactPath:        artifact,
 		WorkDir:             workDir,
 		BindHost:            bindHost,
 		ExternalContentPeer: externalPeer,
+		CaptiveTopology:     captiveTopology,
 		ProviderVersion:     internal.Version,
 	})
 	if err != nil {

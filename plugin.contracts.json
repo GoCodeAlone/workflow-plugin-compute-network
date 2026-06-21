@@ -53,6 +53,7 @@
       "guarantees": [
         "p2p-real-content-transfer",
         "p2p-external-peer-transfer",
+        "captive-external-topology-evidence",
         "captive-deny-by-default",
         "unsupported-does-not-advertise-support",
         "sanitized-json-artifact"

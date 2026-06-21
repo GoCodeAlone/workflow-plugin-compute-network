@@ -195,6 +195,69 @@ func TestCaptiveConformanceDeniesDirectRelayOfflineByDefault(t *testing.T) {
 	assertArtifactRoundTrips(t, artifactPath, artifact)
 }
 
+func TestCaptiveConformanceRecordsExternalTopologyEvidence(t *testing.T) {
+	t.Parallel()
+	artifactPath := filepath.Join(t.TempDir(), "captive-external.json")
+	artifact, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:         transport.ModeCaptive,
+		ArtifactPath: artifactPath,
+		WorkDir:      t.TempDir(),
+		CaptiveTopology: &transport.CaptiveTopologyEvidence{
+			TopologyRef:       "workflow-run:27913642617/task:captive-linux-first",
+			ExternalMultiNode: true,
+		},
+		Now: fixedTime(),
+	})
+	if err != nil {
+		t.Fatalf("captive external topology conformance failed: %v", err)
+	}
+	if artifact.Captive == nil ||
+		artifact.Captive.TopologyRef != "workflow-run:27913642617/task:captive-linux-first" ||
+		!artifact.Captive.ExternalMultiNode {
+		t.Fatalf("expected captive topology evidence to round trip: %+v", artifact.Captive)
+	}
+	for _, spec := range artifact.Specs {
+		if spec.PrepareResponse.Evidence.DiscoverySource != "external-captive-topology" {
+			t.Fatalf("captive evidence did not record external topology source: %+v", spec.PrepareResponse.Evidence)
+		}
+		if err := network.VerifyProviderConformance(spec); err != nil {
+			t.Fatalf("captive topology spec %q does not satisfy conformance: %v", spec.ExpectedMode, err)
+		}
+	}
+	assertArtifactRoundTrips(t, artifactPath, artifact)
+}
+
+func TestCaptiveConformanceRejectsMultiNodeWithoutTopologyRef(t *testing.T) {
+	t.Parallel()
+	_, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:    transport.ModeCaptive,
+		WorkDir: t.TempDir(),
+		CaptiveTopology: &transport.CaptiveTopologyEvidence{
+			ExternalMultiNode: true,
+		},
+		Now: fixedTime(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "captive topology_ref is required") {
+		t.Fatalf("expected missing topology ref error, got %v", err)
+	}
+}
+
+func TestCaptiveConformanceRejectsUnsafeTopologyRef(t *testing.T) {
+	t.Parallel()
+	_, err := transport.RunConformance(context.Background(), transport.RunOptions{
+		Mode:    transport.ModeCaptive,
+		WorkDir: t.TempDir(),
+		CaptiveTopology: &transport.CaptiveTopologyEvidence{
+			TopologyRef:       "https://staging.example.invalid/proofs?token=secret",
+			ExternalMultiNode: true,
+		},
+		Now: fixedTime(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "captive topology_ref must be a sanitized evidence reference") {
+		t.Fatalf("expected unsafe topology ref error, got %v", err)
+	}
+}
+
 func TestUnavailableTorAndTailnetEmitUnsupportedEvidenceWithoutCapabilities(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []transport.Mode{transport.ModeTor, transport.ModeTailnet} {
