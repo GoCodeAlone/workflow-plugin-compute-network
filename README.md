@@ -59,6 +59,23 @@ only be set by a caller that has separately verified the peer is running on a
 distinct node. The host still owns peer admission, signed session issuance,
 routing policy, topology verification, and artifact redaction.
 
+Captive conformance can also record a caller-supplied topology evidence
+reference when the host has separately verified the captive checks ran across
+distinct nodes:
+
+```sh
+workflow-plugin-compute-network conformance \
+  --mode captive \
+  --artifact out/captive-external.json \
+  --captive-topology-ref workflow-run:<run-id>/task:<task-id> \
+  --captive-external-multi-node
+```
+
+The plugin records `external_multi_node=true` in the captive proof only when
+the caller supplies `--captive-external-multi-node`; it does not infer topology
+from the local host. The topology reference is a bounded, sanitized pointer to
+host-owned evidence, not a verifier credential or raw endpoint.
+
 ## Verification
 
 ```sh

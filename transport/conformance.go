@@ -48,6 +48,7 @@ type RunOptions struct {
 	ContentServerCommand []string
 	ContentServerEnv     []string
 	ExternalContentPeer  *ExternalContentPeer
+	CaptiveTopology      *CaptiveTopologyEvidence
 	LookPath             func(string) (string, error)
 	DialContext          func(context.Context, string, string) (net.Conn, error)
 	RunCommand           func(context.Context, string, ...string) ([]byte, error)
@@ -63,6 +64,11 @@ type ExternalContentPeer struct {
 	ContentRef        string
 	IdentitySHA256    string
 	ExpectedSHA256    string
+	ExternalMultiNode bool
+}
+
+type CaptiveTopologyEvidence struct {
+	TopologyRef       string
 	ExternalMultiNode bool
 }
 
@@ -89,9 +95,11 @@ type TransferProof struct {
 }
 
 type CaptiveProof struct {
-	DenyByDefault bool               `json:"deny_by_default"`
-	CheckedModes  []core.NetworkMode `json:"checked_modes"`
-	Residue       ResidueScan        `json:"residue"`
+	DenyByDefault     bool               `json:"deny_by_default"`
+	CheckedModes      []core.NetworkMode `json:"checked_modes"`
+	Residue           ResidueScan        `json:"residue"`
+	TopologyRef       string             `json:"topology_ref,omitempty"`
+	ExternalMultiNode bool               `json:"external_multi_node,omitempty"`
 }
 
 type ResidueScan struct {
@@ -366,6 +374,13 @@ func validateExternalContentPeer(peer ExternalContentPeer) error {
 }
 
 func runCaptive(opts RunOptions, now time.Time) (ConformanceArtifact, error) {
+	var topology CaptiveTopologyEvidence
+	if opts.CaptiveTopology != nil {
+		topology = *opts.CaptiveTopology
+		if err := validateCaptiveTopologyEvidence(topology); err != nil {
+			return ConformanceArtifact{}, err
+		}
+	}
 	sessionDir := filepath.Join(opts.WorkDir, "captive-session")
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return ConformanceArtifact{}, err
@@ -390,6 +405,9 @@ func runCaptive(opts RunOptions, now time.Time) (ConformanceArtifact, error) {
 			Evidence:        evidence(descriptor.ProviderID, opts.ProviderVersion, mode, network.ProviderStatusSupported, now, ""),
 		}
 		resp.Evidence.DiscoverySource = "deny-by-default"
+		if topology.TopologyRef != "" {
+			resp.Evidence.DiscoverySource = "external-captive-topology"
+		}
 		resp.Evidence.Lifecycle = append(resp.Evidence.Lifecycle, network.LifecycleEvent{Event: "prepared", ObservedAt: now})
 		closeReq, closeResp := closePair(descriptor.ProviderID, opts.ProviderVersion, mode, req.RequestID, resp.SessionID, now, true, network.ProviderStatusSupported, "")
 		spec := network.ConformanceSpec{
@@ -417,11 +435,48 @@ func runCaptive(opts RunOptions, now time.Time) (ConformanceArtifact, error) {
 		Supported: true,
 		Specs:     specs,
 		Captive: &CaptiveProof{
-			DenyByDefault: true,
-			CheckedModes:  modes,
-			Residue:       residue,
+			DenyByDefault:     true,
+			CheckedModes:      modes,
+			Residue:           residue,
+			TopologyRef:       topology.TopologyRef,
+			ExternalMultiNode: topology.ExternalMultiNode,
 		},
 	}, nil
+}
+
+func validateCaptiveTopologyEvidence(evidence CaptiveTopologyEvidence) error {
+	ref := strings.TrimSpace(evidence.TopologyRef)
+	if evidence.ExternalMultiNode && ref == "" {
+		return errors.New("captive topology_ref is required when external_multi_node is set")
+	}
+	if ref == "" {
+		return nil
+	}
+	if ref != evidence.TopologyRef {
+		return errors.New("captive topology_ref must not have leading or trailing whitespace")
+	}
+	if len(ref) > 512 {
+		return errors.New("captive topology_ref must be 512 bytes or fewer")
+	}
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("captive topology_ref must not contain control characters")
+		}
+	}
+	if containsUnsafeTopologyRef(ref) {
+		return errors.New("captive topology_ref must be a sanitized evidence reference")
+	}
+	return nil
+}
+
+func containsUnsafeTopologyRef(ref string) bool {
+	lower := strings.ToLower(ref)
+	for _, unsafe := range []string{"://", "?", "bearer ", "token=", "secret=", "password=", "cookie="} {
+		if strings.Contains(lower, unsafe) {
+			return true
+		}
+	}
+	return false
 }
 
 func runTorOverlay(ctx context.Context, opts RunOptions, now time.Time) (ConformanceArtifact, error) {
